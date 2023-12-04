@@ -1,0 +1,586 @@
+---
+title: "6510_final"
+author: "Zijun Ma_T00711782, Shaomeng Yin – T00708655"
+date: "2023-11-30"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# load the packages
+library(fpp3)
+library(zoo)
+library(tseries)
+library(quantmod) # download data form Yahoo finance
+library(moments) # to know summary statistics of data
+library(knitr)
+library(forecast)
+library(fabletools)
+library(fable.prophet)
+library(prophet)
+library(ggplot2)
+library(ggpubr)
+```
+
+
+# Import data as dataframe
+```{r}
+df <- read.csv("/Users/zijunma/Desktop/6510final/DailyDelhiClimateFull.csv")
+head(df)
+```
+
+# EDA
+## Scatter plot and boxplot
+```{r}
+# box plot
+box_plot_meantemp <- ggplot(df, aes_string(y = "meantemp")) +
+  geom_boxplot(fill = "skyblue", color = "black") +
+  labs(title = paste("Boxplot of meantemp")) +
+  theme_minimal()
+
+box_plot_humidity <- ggplot(df, aes_string(y = "humidity")) +
+  geom_boxplot(fill = "skyblue", color = "black") +
+  labs(title = paste("Boxplot of humidity")) +
+  theme_minimal()
+
+box_plot_wind_speed <- ggplot(df, aes_string(y = "wind_speed")) +
+  geom_boxplot(fill = "skyblue", color = "black") +
+  labs(title = paste("Boxplot of wind_speed")) +
+  theme_minimal()
+
+box_plot_meanpressure <- ggplot(df, aes_string(y = "meanpressure")) +
+  geom_boxplot(fill = "skyblue", color = "black") +
+  labs(title = paste("Boxplot of meanpressure")) +
+  theme_minimal()
+
+# scatter plot 
+scatter_plot_meantemp <- ggplot(df, aes(x = date, y = meantemp)) +
+  geom_point() +
+  labs(title = "Scatter plot of meantemp",
+       x = "time",
+       y = "meantemp") +
+  theme_minimal()
+
+# scatter plot 
+scatter_plot_humidity <- ggplot(df, aes(x = date, y = humidity)) +
+  geom_point() +
+  labs(title = "Scatter plot of humidity",
+       x = "time",
+       y = "humidity") +
+  theme_minimal()
+
+# scatter plot 
+scatter_plot_wind_speed <- ggplot(df, aes(x = date, y = wind_speed)) +
+  geom_point() +
+  labs(title = "Scatter plot of wind_speed",
+       x = "time",
+       y = "wind_speed") +
+  theme_minimal()
+
+# scatter plot 
+scatter_plot_meanpressure <- ggplot(df, aes(x = date, y = meanpressure)) +
+  geom_point() +
+  labs(title = "Scatter plot of mean pressure",
+       x = "time",
+       y = "meanpressure") +
+  theme_minimal()
+```
+
+```{r}
+figure_1 <- ggarrange(box_plot_meantemp, box_plot_humidity, box_plot_wind_speed, box_plot_meanpressure,
+                    ncol = 2, nrow = 2)
+figure_1
+
+figure_2 <- ggarrange(scatter_plot_meantemp, scatter_plot_humidity, scatter_plot_wind_speed, scatter_plot_meanpressure,
+                    ncol = 2, nrow = 2)
+figure_2
+```
+By checking the scatter plot and box plot, we can find there exist some outlier values for both wind_speed and mean pressure.
+
+```{r}
+# check missing data
+sum(is.na(df))
+```
+
+```{r}
+tsoutliers(df$meantemp)
+tsoutliers(df$humidity)
+tsoutliers(df$wind_speed)
+tsoutliers(df$meanpressure)
+
+df_data_cleaned <- df 
+df_data_cleaned$wind_speed[tsoutliers(df$wind_speed)$index] <- tsoutliers(df$wind_speed)$replacements
+
+df_data_cleaned$meanpressure[tsoutliers(df$meanpressure)$index] <- tsoutliers(df$meanpressure)$replacements
+```
+
+
+```{r}
+# scatter plot for wind_speed without outliers
+plot_wind_speed_without_outliers <- ggplot(df_data_cleaned, aes(x = date, y = wind_speed)) +
+  geom_point() +
+  labs(title = "Scatter plot of wind_speed",
+       x = "time",
+       y = "wind_speed") +
+  ylim(0, 50) +
+  theme_minimal()
+
+# scatter plot for meanpressure without outliers
+plot_meanpressure_without_outliers <- ggplot(df_data_cleaned, aes(x = date, y = meanpressure)) +
+  geom_point() +
+  labs(title = "Scatter plot of mean pressure",
+       x = "time",
+       y = "meanpressure") +
+  ylim(0,8000) +
+  theme_minimal()
+
+figure_3 <- ggarrange(scatter_plot_wind_speed, plot_wind_speed_without_outliers,
+                    ncol = 2, nrow = 1)
+figure_4 <- ggarrange(scatter_plot_meanpressure, plot_meanpressure_without_outliers,
+                    ncol = 2, nrow = 1)
+figure_3
+figure_4
+```
+
+```{r}
+full_data_tsibble <- df_data_cleaned |>
+  mutate(date = as.Date(date)) |>
+  as_tsibble(index = date, regular = TRUE) |>
+  mutate(day = row_number()) |>
+  update_tsibble(index = day, regular = TRUE)
+```
+
+```{r}
+# split the dataset into training dataset and testing dataset
+train_data <- full_data_tsibble |>
+  filter(date >= as.Date("2013-01-01") & date <= as.Date("2016-12-31"))
+
+test_data <- full_data_tsibble |>
+  filter(date >= as.Date("2017-01-01") & date <= as.Date("2017-04-24"))
+```
+
+## Three Benchmark models
+```{r}
+# benchmark models (mean, naive, drift)
+bench_fit <- train_data |>
+  model(
+    Mean = MEAN(meantemp),
+    `Naïve` = NAIVE(meantemp),
+    Drift = NAIVE(meantemp ~ drift())
+  )
+
+# forecast
+bench_fc <- bench_fit |>
+  forecast(new_data = test_data)
+
+# Plot the forecasts
+bench_fc |>
+  autoplot(full_data_tsibble, level = NULL) +
+  labs(y = "Temperature",
+       title = "Temperature forecast of Jan to Apr 2017 based on yearly data for 2013-2016",
+       subtitle = "(Jan 2013 - Apr 2017)") +
+  guides(colour = guide_legend(title = "Forecast"))
+
+# Forecast accuracy
+bench_fc |>
+  fabletools::accuracy(test_data)
+# RMSE Drift:8.976, Mean:7.381, Naive:9.190. Mean is the best. 
+
+# Check the residuals. 
+bench_fit |>
+select(Mean) |>
+gg_tsresiduals()+
+  labs(title="Residuals Analysis for the Mean Model")
+# the residuals from the best method: mean method is not white noise.
+
+#The residuals appear very auto-correlated as many lags exceed the significance threshold. This can also be seen in the residual plot, where there are periods of sustained high and low residuals. The distribution does not appear normally distributed (far from white noise), and is not centred around zero.
+
+
+# Portmanteau tests for autocorrelation
+aug <- train_data |>
+  model(MEAN(meantemp)) |>
+  augment()
+
+aug |> features(.innov, box_pierce, lag = 10)
+aug |> features(.innov, ljung_box, lag = 10)
+
+
+
+# Multi-step ahead prediction intervals
+#train_data |>
+  #model(MEAN(meantemp)) |>
+  #forecast(test_data) |>
+  #hilo(95)
+
+train_data |>
+  model(MEAN(meantemp)) |>
+  forecast(test_data) |>
+  autoplot(full_data_tsibble) +
+  labs(title="Daily temperature forecast of the Mean method",
+       subtitle = "(Jan 2017 - Apr 2017)", y="Temperature" )
+
+
+```
+
+## ARIMA or SARIMA models
+```{r}
+# No difference
+train_data |> gg_tsdisplay(meantemp, plot_type = 'partial', lag=730)+
+  labs(title="Time plot and ACF and PACF plots for the daily averaged temperature")
+
+#The ACF of stationary data drops to zero relatively quickly,The ACF of non-stationary data decreases slowly.For non-stationary data, the value of lag1 is often large and positive.
+#The data are clearly non-stationary, with strong seasonality and a nonlinear trend, so we will first take a seasonal difference.
+
+# Seasonal difference
+train_data |>
+  gg_tsdisplay(difference(meantemp, 365),
+               plot_type='partial', lag=1095) +
+  labs(title="Seasonally differenced daily averaged temperature", y="")
+#These are also clearly non-stationary, so we take a further first difference 
+
+# Seasonal difference+ first difference
+train_data |>
+  gg_tsdisplay(difference(meantemp, 365)|> difference(),
+               plot_type='partial', lag=1095) +
+  labs(title="Double differenced daily averaged temperature", y="")
+
+
+
+
+# First difference is used to stabilize the variance and mean.stationary.
+train_data |> gg_tsdisplay(difference(meantemp), plot_type = 'partial', lag=30)+
+  labs(title="First differenced daily averaged temperature", y="")
+
+
+arima_fit <- train_data |>
+  model(arima2010 = ARIMA(meantemp ~ 1+pdq(20,1,0)),
+        arima019 = ARIMA(meantemp ~ 1+pdq(0,1,9)),
+        stepwise = ARIMA(meantemp))
+
+arima_fit
+
+glance(arima_fit) |> arrange(AICc) |> select(.model:BIC)
+# Stepwise gives the best model,ARIMA(2,1,2), with the lowest AIC, AICc and BIC.
+
+# Check the best model
+arima_fit |>
+  select(stepwise) |>
+  report()
+
+# Check residuals
+arima_fit |>
+  select(stepwise) |>
+  gg_tsresiduals()+
+  labs(title="Residuals from the fitted ARIMA(2,1,2) model")
+
+
+augment(arima_fit) |>
+  filter(.model=='stepwise') |>
+  features(.innov, ljung_box, lag = 10, dof = 4)
+# P value is 0.03.The residuals does not pass the Ljung-Box test, and the histogram looks like left-skewed.
+
+
+# Forecast
+arima_fc<-arima_fit |>
+  forecast(test_data) |>
+  filter(.model=='stepwise') 
+
+arima_fc|>
+  autoplot(full_data_tsibble) +
+  labs(title="Temperature forecast of Jan to Apr 2017: the ARIMA(2,1,2) model", y="Temperature" )
+
+arima.acc <- accuracy(arima_fc$.mean,test_data$meantemp)
+# RMSE is 12.24, MAE is 9.94
+```
+
+## EWMA model
+```{r}
+# EWMA model
+ewma_fit <- train_data %>%
+  model(ETS(meantemp))
+report(ewma_fit)
+
+#EWMA Forecast
+ewma_fc<-ewma_fit %>%
+  forecast(test_data) 
+
+# Check residuals
+ewma_fit |>
+  gg_tsresiduals()+
+  labs(title="Residuals from the fitted EWMA model")
+
+augment(ewma_fit) %>%
+features(.resid, ljung_box, lag=10)
+# P value is extremely small.The residuals does not pass the Ljung-Box test, and the histogram looks like left-skewed.
+
+ewma_fc|>
+  autoplot(full_data_tsibble) +
+  labs(title="Temperature forecast of Jan to Apr 2017:EWMA method", y="Temperature" )
+
+ewma.acc <- accuracy(ewma_fc$.mean,test_data$meantemp)
+# Comment: The RMSE of EWMA model is 9.288.
+```
+
+## standard regression model
+```{r}
+# Fit a regression model with standard time series regression model
+regression_fit_model <- train_data |>
+  model(
+    TSLM(meantemp ~ humidity + wind_speed + meanpressure)
+  )
+
+report(regression_fit_model)
+
+# Forecast using regression model on the test set
+forecast_regression_model <- regression_fit_model |>
+  forecast(new_data = test_data)
+
+# Plot regression forecasts
+forecast_regression_model |>
+  autoplot(full_data_tsibble) +
+  labs(title = "Regression Model Forecast for Daily Delhi Climate Data")
+
+# accuracy
+forecast_regression_model.acc <- accuracy(forecast_regression_model$.mean, test_data$meantemp)
+forecast_regression_model.acc
+
+# check residual plot
+regression_fit_model |> gg_tsresiduals()
+
+# check error term
+
+augment(regression_fit_model) |>
+  features(.innov, ljung_box, lag = 10)
+```
+p-value is 0, can reject the null hypothesis, it shows the error term does not follow the white noise behavior.
+
+## dynamic regression model
+```{r}
+# Fit a regression model with the SARIMA errors process
+dynamic_reg_fit_model <- train_data |>
+  model(ARIMA(meantemp ~ humidity + wind_speed + meanpressure)
+        )
+
+report(dynamic_reg_fit_model)
+
+# Forecast using dynamic regression model on the test set
+forecast_dynamic_reg_model <- dynamic_reg_fit_model |>
+  forecast(new_data = test_data)
+
+# Plot dynamic regression forecasts
+forecast_dynamic_reg_model |>
+  autoplot(full_data_tsibble) +
+  labs(title = "Dynamic Regression Model Forecast for Daily Delhi Climate Data") 
+
+forecast_dynamic_reg_model.acc <- accuracy(forecast_dynamic_reg_model$.mean, test_data$meantemp)
+
+forecast_dynamic_reg_model.acc
+
+# check residual plot
+dynamic_reg_fit_model |> gg_tsresiduals()
+
+augment(dynamic_reg_fit_model) |>
+  features(.innov, ljung_box, dof = 4, lag = 8)
+```
+The p-value is 0.885, which is larger than 0.05, thus we cannot reject null hypothesis, and it shows the error term which follow ARIMA(1,1,3) model has white noise behavior.
+
+From the residual plot of the fitted dynamic regression model, we can see there is barely heteroscedasticity in the residuals. The model also has few significant autocorrelation in the residuals, and the histogram of the residuals shows normal distribution. It shows ARIMA errors follow the white noise behavior very closely.
+
+Thus, we can indicate that dynamic regression model somehow adequately addressed the autocorrelations seen in the standard time series regression model, because the SARIMA error term in dynamic regression model capture these information which does not explain in the standard regression time series model.
+
+## Combination of Dynamic regression and standard regression
+```{r}
+# Dynamic regression plus standard regression
+com_fc <- train_data %>%
+model(
+DynamicRegression = ARIMA(meantemp ~ humidity + wind_speed + meanpressure),
+StandardRegression =TSLM(meantemp ~ humidity + wind_speed + meanpressure)
+) %>%
+mutate(
+Combination = (DynamicRegression + StandardRegression)/2
+) %>%
+forecast(test_data)
+
+com_fc %>% autoplot(full_data_tsibble, level = NULL) +
+labs(y = "Temperature",title = "Temperature forecast of Jan to Apr 2017:Combination")
+
+combination.acc <- accuracy(com_fc$.mean,test_data$meantemp)
+# Comment: The RMSE of Combination model is 3.874.
+
+```
+
+## NNAR model
+```{r}
+## NNAR model
+NNAR_fit <- train_data |>
+  model(NNETAR(meantemp))
+
+NNAR_fc <- NNAR_fit |>
+  forecast(new_data = test_data)
+
+# View(NNAR_fc)
+accuracy_NNAR <- fabletools::accuracy(NNAR_fc, full_data_tsibble)
+accuracy_NNAR
+
+NNAR_fit |> gg_tsresiduals()
+```
+
+## Prophet model
+```{r}
+a <- train_data$meantemp
+
+train <- as.data.frame(a)
+train <- cbind(ds = train_data$date, train)
+rownames(train) <- 1:nrow(train)
+colnames(train) <- c ("ds", "y")
+head(train)
+
+# fit the prophet model
+fit.prophet <- prophet(train)
+future <- data.frame(ds = test_data$date)
+fit.prophet_fc <- predict(fit.prophet, future)
+
+plot(fit.prophet, fit.prophet_fc)
+
+## prophet decomposition
+prophet_plot_components(fit.prophet, fit.prophet_fc)
+
+# accuracy
+accuracy_fit_prophet <- forecast::accuracy(fit.prophet_fc$yhat, test_data$meantemp)
+accuracy_fit_prophet
+
+```
+
+## standard regression model
+```{r}
+# Fit a regression model with standard time series regression model
+regression_fit_model <- train_data |>
+  model(
+    TSLM(meantemp ~ humidity + wind_speed + meanpressure)
+  )
+
+report(regression_fit_model)
+
+# Forecast using regression model on the test set
+forecast_regression_model <- regression_fit_model |>
+  forecast(new_data = test_data)
+
+# Plot regression forecasts
+forecast_regression_model |>
+  autoplot(full_data_tsibble) +
+  labs(title = "Standard Regression Model Forecast for Daily Delhi Climate Data")
+
+# accuracy
+forecast_regression_model.acc <- accuracy(forecast_regression_model$.mean, test_data$meantemp)
+forecast_regression_model.acc
+
+# check residual plot
+regression_fit_model |> gg_tsresiduals() +
+  labs(title = "Residuals Analysis for Standard Regression Model")
+
+# check error term
+
+augment(regression_fit_model) |>
+  features(.innov, ljung_box, lag = 10)
+```
+p-value is 0, can reject the null hypothesis, it shows the error term does not follow the white noise behavior.
+
+## dynamic regression model
+```{r}
+# Fit a regression model with the SARIMA errors process
+dynamic_reg_fit_model <- train_data |>
+  model(ARIMA(meantemp ~ humidity + wind_speed + meanpressure)
+        )
+
+report(dynamic_reg_fit_model)
+
+# Forecast using dynamic regression model on the test set
+forecast_dynamic_reg_model <- dynamic_reg_fit_model |>
+  forecast(new_data = test_data)
+
+# Plot dynamic regression forecasts
+forecast_dynamic_reg_model |>
+  autoplot(full_data_tsibble) +
+  labs(title = "Dynamic Regression Model Forecast for Daily Delhi Climate Data") 
+
+forecast_dynamic_reg_model.acc <- accuracy(forecast_dynamic_reg_model$.mean, test_data$meantemp)
+
+forecast_dynamic_reg_model.acc
+
+# check residual plot
+dynamic_reg_fit_model |> gg_tsresiduals() +
+  labs(title = "Residuals Analysis for Dynamic Regression Model")
+
+augment(dynamic_reg_fit_model) |>
+  features(.innov, ljung_box, dof = 3, lag = 8)
+```
+The p-value is 0.351, which is larger than 0.05, thus we cannot reject null hypothesis, and it shows the error term which follow ARIMA(2,1,1) model has white noise behavior.
+
+From the residual plot of the fitted dynamic regression model, we can see there is barely heteroscedasticity in the residuals. The model also has few significant autocorrelation in the residuals, and the histogram of the residuals shows normal distribution. It shows ARIMA errors follow the white noise behavior very closely.
+
+Thus, we can indicate that dynamic regression model somehow adequately addressed the autocorrelations seen in the standard time series regression model, because the SARIMA error term in dynamic regression model capture these information which does not explain in the standard regression time series model.
+
+## NNETAR model
+```{r}
+set.seed(6510)
+## NNAR model
+NNAR_fit <- train_data |>
+  model(NNETAR(meantemp))
+
+NNAR_fc <- NNAR_fit |>
+  forecast(new_data = test_data) 
+
+NNAR_fc |>
+  autoplot(full_data_tsibble) +
+  labs(title = "NNETAR Model Forecast for Daily Delhi Climate Data") 
+
+# View(NNAR_fc)
+accuracy_NNAR <- fabletools::accuracy(NNAR_fc, full_data_tsibble)
+accuracy_NNAR
+
+NNAR_fit |> gg_tsresiduals() + labs(title = "Residuals Analysis for NNETAR Model")
+```
+
+## Prophet model
+```{r}
+a <- train_data$meantemp
+train <- as.data.frame(a)
+train <- cbind(ds = train_data$date, train)
+rownames(train) <- 1:nrow(train)
+colnames(train) <- c ("ds", "y")
+head(train)
+
+# fit the prophet model
+fit.prophet <- prophet(train)
+future <- data.frame(ds = full_data_tsibble$date)
+tail(future)
+fit.prophet_fc <- predict(fit.prophet, future)
+
+plot(fit.prophet, fit.prophet_fc)
+
+## prophet decomposition
+prophet_plot_components(fit.prophet, fit.prophet_fc)
+
+# accuracy
+accuracy_fit_prophet <- forecast::accuracy(fit.prophet_fc$yhat, test_data$meantemp)
+accuracy_fit_prophet
+
+```
+
+## result 
+```{r}
+## results
+result_1 <- data.frame(
+  models = c("Three Benchmark models","ARIMA","EWMA","Standard Regression Model", "Dynamic Regression Model","Combination regression", "NNETAR Model", "Prophet Model"),
+  RMSE = c(7.38, arima.acc[2], ewma.acc[2], forecast_regression_model.acc[2],forecast_dynamic_reg_model.acc[2], combination.acc[2], accuracy_NNAR$RMSE,
+          accuracy_fit_prophet[2] )
+)
+kable(result_1)
+```
+
+
+
+
